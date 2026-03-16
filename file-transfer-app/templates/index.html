@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Transfer App</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>📁 File Transfer App</h1>
+            <div class="connection-info">
+                <span class="ip-badge">IP: {{ ip }}:{{ port }}</span>
+                <button id="show-qr-btn" class="btn btn-secondary">📱 QR Code</button>
+            </div>
+        </header>
+
+        <!-- QR Code Modal -->
+        <div id="qr-modal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close-btn">&times;</span>
+                <h3>Scan to connect from your phone</h3>
+                <img id="qr-image" src="/api/qr" alt="QR Code">
+                <p class="qr-url">http://{{ ip }}:{{ port }}</p>
+            </div>
+        </div>
+
+        <!-- Breadcrumb Navigation -->
+        <nav class="breadcrumb" id="breadcrumb">
+            <span class="breadcrumb-item" data-path="">Home</span>
+        </nav>
+
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <button id="new-folder-btn" class="btn btn-primary">📁 New Folder</button>
+            <button id="upload-btn" class="btn btn-primary">📤 Upload Files</button>
+            <button id="gallery-btn" class="btn btn-primary">🖼️ Upload Photos</button>
+            <button id="download-selected-btn" class="btn btn-success" disabled>⬇️ Download Selected</button>
+            <input type="file" id="file-input" multiple accept="*/*" hidden>
+            <input type="file" id="gallery-input" multiple accept="image/*,video/*" hidden>
+        </div>
+
+        <!-- New Folder Modal -->
+        <div id="folder-modal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close-btn">&times;</span>
+                <h3>Create New Folder</h3>
+                <input type="text" id="folder-name-input" placeholder="Folder name">
+                <div class="modal-actions">
+                    <button id="create-folder-confirm" class="btn btn-primary">Create</button>
+                    <button id="create-folder-cancel" class="btn btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- File List -->
+        <div class="file-list-container">
+            <div class="file-list-header">
+                <div class="col-checkbox">
+                    <input type="checkbox" id="select-all">
+                </div>
+                <div class="col-name">Name</div>
+                <div class="col-size">Size</div>
+                <div class="col-actions">Actions</div>
+            </div>
+            <div id="file-list" class="file-list">
+                <!-- Files will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Drop Zone -->
+        <div id="drop-zone" class="drop-zone">
+            <div class="drop-zone-content">
+                <span class="drop-icon">📥</span>
+                <p>Drop files or photos here to upload</p>
+                <p class="drop-hint">Use "Upload Files" or "Upload Photos" buttons above</p>
+            </div>
+        </div>
+
+        <!-- Upload Progress -->
+        <div id="upload-progress" class="upload-progress hidden">
+            <div class="progress-info">
+                <span id="progress-status">Uploading...</span>
+                <span id="progress-percent">0%</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <div class="progress-details">
+                <span id="progress-size">0 MB / 0 MB</span>
+                <span id="progress-speed">0 MB/s</span>
+                <span id="progress-time">--:--</span>
+            </div>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+
+    <script>
+        // State
+        let currentPath = '';
+        let selectedFiles = new Set();
+
+        // DOM Elements
+        const fileList = document.getElementById('file-list');
+        const breadcrumb = document.getElementById('breadcrumb');
+        const selectAllCheckbox = document.getElementById('select-all');
+        const downloadSelectedBtn = document.getElementById('download-selected-btn');
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const galleryInput = document.getElementById('gallery-input');
+        const uploadBtn = document.getElementById('upload-btn');
+        const galleryBtn = document.getElementById('gallery-btn');
+        const newFolderBtn = document.getElementById('new-folder-btn');
+        const folderModal = document.getElementById('folder-modal');
+        const qrModal = document.getElementById('qr-modal');
+        const showQrBtn = document.getElementById('show-qr-btn');
+        const folderNameInput = document.getElementById('folder-name-input');
+        const createFolderConfirm = document.getElementById('create-folder-confirm');
+        const createFolderCancel = document.getElementById('create-folder-cancel');
+        const uploadProgress = document.getElementById('upload-progress');
+        const progressFill = document.getElementById('progress-fill');
+        const progressStatus = document.getElementById('progress-status');
+        const progressPercent = document.getElementById('progress-percent');
+        const progressSize = document.getElementById('progress-size');
+        const progressSpeed = document.getElementById('progress-speed');
+        const progressTime = document.getElementById('progress-time');
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadFiles(currentPath);
+        });
+
+        // Load files from server
+        async function loadFiles(path) {
+            try {
+                const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                currentPath = data.current_path;
+                renderBreadcrumb(currentPath);
+                renderFileList(data.items);
+                selectedFiles.clear();
+                updateSelectionUI();
+            } catch (error) {
+                showToast('Failed to load files', 'error');
+            }
+        }
+
+        // Render breadcrumb navigation
+        function renderBreadcrumb(path) {
+            const parts = path.split('/').filter(p => p);
+            let html = '<span class="breadcrumb-item" data-path="">Home</span>';
+
+            let current = '';
+            for (const part of parts) {
+                current += (current ? '/' : '') + part;
+                html += ' <span class="breadcrumb-separator">/</span> ';
+                html += `<span class="breadcrumb-item" data-path="${current}">${part}</span>`;
+            }
+
+            breadcrumb.innerHTML = html;
+
+            // Add click handlers
+            breadcrumb.querySelectorAll('.breadcrumb-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    loadFiles(item.dataset.path);
+                });
+            });
+        }
+
+        // Render file list
+        function renderFileList(items) {
+            fileList.innerHTML = '';
+
+            if (items.length === 0) {
+                fileList.innerHTML = '<div class="empty-state">This folder is empty</div>';
+                return;
+            }
+
+            for (const item of items) {
+                const row = document.createElement('div');
+                row.className = 'file-row';
+                row.dataset.path = item.path;
+                row.dataset.type = item.type;
+
+                const icon = item.type === 'folder' ? '📁' :
+                            item.type === 'parent' ? '⬆️' : getFileIcon(item.name);
+
+                const checkbox = item.type === 'parent' ? '' :
+                    `<input type="checkbox" class="file-checkbox" data-path="${item.path}">`;
+
+                const size = item.size || '-';
+
+                const actions = item.type === 'parent' ? '' : item.type === 'folder' ? '' :
+                    `<button class="btn btn-small btn-download" data-path="${item.path}">⬇️</button>`;
+
+                row.innerHTML = `
+                    <div class="col-checkbox">${checkbox}</div>
+                    <div class="col-name">
+                        <span class="file-icon">${icon}</span>
+                        <span class="file-name">${item.name}</span>
+                    </div>
+                    <div class="col-size">${size}</div>
+                    <div class="col-actions">${actions}</div>
+                `;
+
+                // Double click to open folder
+                if (item.type === 'folder' || item.type === 'parent') {
+                    row.addEventListener('dblclick', () => {
+                        loadFiles(item.path);
+                    });
+                    row.style.cursor = 'pointer';
+                }
+
+                // Checkbox change
+                const cb = row.querySelector('.file-checkbox');
+                if (cb) {
+                    cb.addEventListener('change', (e) => {
+                        if (e.target.checked) {
+                            selectedFiles.add(item.path);
+                        } else {
+                            selectedFiles.delete(item.path);
+                        }
+                        updateSelectionUI();
+                    });
+                }
+
+                // Download button
+                const downloadBtn = row.querySelector('.btn-download');
+                if (downloadBtn) {
+                    downloadBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        downloadFile(item.path);
+                    });
+                }
+
+                fileList.appendChild(row);
+            }
+        }
+
+        // Get icon for file type
+        function getFileIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const icons = {
+                'pdf': '📄',
+                'doc': '📝', 'docx': '📝',
+                'xls': '📊', 'xlsx': '📊',
+                'ppt': '📊', 'pptx': '📊',
+                'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
+                'mp4': '🎬', 'avi': '🎬', 'mov': '🎬',
+                'mp3': '🎵', 'wav': '🎵',
+                'zip': '📦', 'rar': '📦', '7z': '📦',
+                'txt': '📃',
+                'py': '🐍',
+                'js': '📜',
+                'html': '🌐', 'htm': '🌐',
+                'css': '🎨'
+            };
+            return icons[ext] || '📄';
+        }
+
+        // Update selection UI
+        function updateSelectionUI() {
+            downloadSelectedBtn.disabled = selectedFiles.size === 0;
+            downloadSelectedBtn.textContent = `⬇️ Download Selected (${selectedFiles.size})`;
+
+            // Update checkboxes
+            document.querySelectorAll('.file-checkbox').forEach(cb => {
+                cb.checked = selectedFiles.has(cb.dataset.path);
+            });
+
+            // Update select all
+            const checkboxes = document.querySelectorAll('.file-checkbox');
+            const checkedBoxes = document.querySelectorAll('.file-checkbox:checked');
+            selectAllCheckbox.checked = checkboxes.length > 0 && checkboxes.length === checkedBoxes.length;
+            selectAllCheckbox.indeterminate = checkedBoxes.length > 0 && checkedBoxes.length < checkboxes.length;
+        }
+
+        // Select all handler
+        selectAllCheckbox.addEventListener('change', (e) => {
+            const checkboxes = document.querySelectorAll('.file-checkbox');
+            checkboxes.forEach(cb => {
+                cb.checked = e.target.checked;
+                if (e.target.checked) {
+                    selectedFiles.add(cb.dataset.path);
+                } else {
+                    selectedFiles.delete(cb.dataset.path);
+                }
+            });
+            updateSelectionUI();
+        });
+
+        // Download single file
+        function downloadFile(path) {
+            window.location.href = `/api/download?path=${encodeURIComponent(path)}`;
+        }
+
+        // Download selected files
+        downloadSelectedBtn.addEventListener('click', async () => {
+            if (selectedFiles.size === 0) return;
+
+            if (selectedFiles.size === 1) {
+                // Single file - direct download
+                downloadFile(Array.from(selectedFiles)[0]);
+            } else {
+                // Multiple files - zip download
+                try {
+                    const response = await fetch('/api/download-zip', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ paths: Array.from(selectedFiles) })
+                    });
+
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'download.zip';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                        showToast('Download started', 'success');
+                    } else {
+                        showToast('Download failed', 'error');
+                    }
+                } catch (error) {
+                    showToast('Download failed', 'error');
+                }
+            }
+        });
+
+        // Upload button click
+        uploadBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadFiles(e.target.files);
+            }
+        });
+
+        // Gallery button click
+        galleryBtn.addEventListener('click', () => {
+            galleryInput.click();
+        });
+
+        // Gallery input change
+        galleryInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadFiles(e.target.files);
+            }
+        });
+
+        // Drag and drop
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('drag-over');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+
+            if (e.dataTransfer.files.length > 0) {
+                uploadFiles(e.dataTransfer.files);
+            }
+        });
+
+        // Upload files
+        async function uploadFiles(files) {
+            const formData = new FormData();
+            formData.append('path', currentPath);
+
+            for (const file of files) {
+                formData.append('files', file);
+            }
+
+            // Calculate total size
+            const totalSize = Array.from(files).reduce((sum, file) => sum + file.size, 0);
+
+            uploadProgress.classList.remove('hidden');
+            progressFill.style.width = '0%';
+            progressStatus.textContent = files.length > 1 ? `Uploading ${files.length} files...` : 'Uploading...';
+            progressPercent.textContent = '0%';
+            progressSize.textContent = `0 MB / ${formatBytes(totalSize)}`;
+            progressSpeed.textContent = '0 MB/s';
+            progressTime.textContent = '--:--';
+
+            const startTime = Date.now();
+            let lastLoaded = 0;
+            let lastTime = startTime;
+
+            try {
+                const xhr = new XMLHttpRequest();
+
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = (e.loaded / e.total) * 100;
+                        const currentTime = Date.now();
+                        const elapsed = (currentTime - startTime) / 1000;
+
+                        // Calculate speed (bytes per second) using last 500ms window for smoother readings
+                        const timeDiff = (currentTime - lastTime) / 1000;
+                        let speed = 0;
+                        if (timeDiff > 0.1) {
+                            speed = (e.loaded - lastLoaded) / timeDiff;
+                            lastLoaded = e.loaded;
+                            lastTime = currentTime;
+                        }
+
+                        // Calculate ETA
+                        const remaining = e.total - e.loaded;
+                        const eta = speed > 0 ? remaining / speed : 0;
+
+                        // Update UI
+                        progressFill.style.width = percent + '%';
+                        progressPercent.textContent = Math.round(percent) + '%';
+                        progressSize.textContent = `${formatBytes(e.loaded)} / ${formatBytes(e.total)}`;
+                        progressSpeed.textContent = formatSpeed(speed);
+                        progressTime.textContent = formatTime(eta);
+
+                        // Update status based on progress
+                        if (percent < 100) {
+                            progressStatus.textContent = files.length > 1
+                                ? `Uploading ${files.length} files...`
+                                : `Uploading ${files[0].name}...`;
+                        } else {
+                            progressStatus.textContent = 'Processing...';
+                        }
+                    }
+                });
+
+                xhr.addEventListener('load', () => {
+                    uploadProgress.classList.add('hidden');
+
+                    if (xhr.status === 200) {
+                        const data = JSON.parse(xhr.responseText);
+                        showToast(data.message, 'success');
+                        loadFiles(currentPath);
+                    } else {
+                        showToast('Upload failed', 'error');
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    uploadProgress.classList.add('hidden');
+                    showToast('Upload failed', 'error');
+                });
+
+                xhr.addEventListener('abort', () => {
+                    uploadProgress.classList.add('hidden');
+                    showToast('Upload cancelled', 'info');
+                });
+
+                xhr.open('POST', '/api/upload');
+                xhr.send(formData);
+            } catch (error) {
+                uploadProgress.classList.add('hidden');
+                showToast('Upload failed', 'error');
+            }
+        }
+
+        // Format bytes to human readable
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let unitIndex = 0;
+            let size = bytes;
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex++;
+            }
+            return `${size.toFixed(1)} ${units[unitIndex]}`;
+        }
+
+        // Format speed
+        function formatSpeed(bytesPerSecond) {
+            if (bytesPerSecond === 0) return '0 MB/s';
+            const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+            let unitIndex = 0;
+            let speed = bytesPerSecond;
+            while (speed >= 1024 && unitIndex < units.length - 1) {
+                speed /= 1024;
+                unitIndex++;
+            }
+            return `${speed.toFixed(1)} ${units[unitIndex]}`;
+        }
+
+        // Format time (seconds to MM:SS)
+        function formatTime(seconds) {
+            if (!isFinite(seconds) || seconds < 0) return '--:--';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            if (mins > 99) return '99:99';
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        // New folder modal
+        newFolderBtn.addEventListener('click', () => {
+            folderModal.classList.remove('hidden');
+            folderNameInput.value = '';
+            folderNameInput.focus();
+        });
+
+        createFolderCancel.addEventListener('click', () => {
+            folderModal.classList.add('hidden');
+        });
+
+        createFolderConfirm.addEventListener('click', async () => {
+            const name = folderNameInput.value.trim();
+            if (!name) {
+                showToast('Folder name cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, path: currentPath })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showToast('Folder created successfully', 'success');
+                    folderModal.classList.add('hidden');
+                    loadFiles(currentPath);
+                } else {
+                    showToast(data.error || 'Failed to create folder', 'error');
+                }
+            } catch (error) {
+                showToast('Failed to create folder', 'error');
+            }
+        });
+
+        // Enter key in folder name input
+        folderNameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                createFolderConfirm.click();
+            }
+        });
+
+        // QR Code modal
+        showQrBtn.addEventListener('click', () => {
+            qrModal.classList.remove('hidden');
+        });
+
+        // Close modals
+        document.querySelectorAll('.close-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                btn.closest('.modal').classList.add('hidden');
+            });
+        });
+
+        // Close modal on outside click
+        window.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) {
+                e.target.classList.add('hidden');
+            }
+        });
+
+        // Toast notifications
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+
+            document.getElementById('toast-container').appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('show');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => {
+                    toast.remove();
+                }, 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
